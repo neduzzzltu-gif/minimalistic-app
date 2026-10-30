@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No packageNames filter here: we need window changes from every app to know when a gated app
+     leaves the foreground. Content-change events from unscoped apps are dropped in code first thing. -->
+<!-- isAccessibilityTool: Android 14+ hides "accessibilityDataSensitive" screens (Accessibility settings,
+     uninstall dialog) from non-tool services; lockdown must see them. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:isAccessibilityTool="true"
+    android:notificationTimeout="250"
+    android:description="@string/a11y_description" />

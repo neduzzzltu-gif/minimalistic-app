@@ -1,0 +1,10 @@
+.gradle/
+build/
+app/build/
+local.properties
+dumps/
+*.apk
+.idea/
+test_screen.png
+test_ui.xml
+*.apk

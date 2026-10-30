@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- NOTE: deliberately NO internet. "remove" also strips it if any library ever tries to add it. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Granted once over adb (pm grant): needed for the grayscale (daltonizer) toggle. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:name=".App"
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Black"
+        android:supportsRtl="false"
+        tools:targetApi="36">
+
+        <!-- Home screen. singleTask + stateNotNeeded = standard launcher setup. -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:stateNotNeeded="true"
+            android:clearTaskOnLaunch="true"
+            android:excludeFromRecents="true"
+            android:resizeableActivity="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|screenLayout">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Gate / lock / time's up. Own task so it never sits inside the gated app's task. -->
+        <activity
+            android:name=".ui.GateActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="lt.stillhome.gate"
+            android:excludeFromRecents="true"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Settings shows in Recents on purpose: its card is what gets "locked in recents" (HyperOS). -->
+        <activity android:name=".ui.SettingsActivity" android:exported="false"
+            android:taskAffinity="lt.stillhome.settings" android:label="Stillhome"
+            android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.OnboardingActivity" android:exported="false"
+            android:taskAffinity="lt.stillhome.settings" android:excludeFromRecents="true"
+            android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.LabelActivity" android:exported="false"
+            android:taskAffinity="lt.stillhome.gate" android:excludeFromRecents="true"
+            android:screenOrientation="portrait" />
+        <activity android:name=".ui.DigestActivity" android:exported="false"
+            android:excludeFromRecents="true" android:screenOrientation="portrait" />
+        <activity android:name=".ui.ReviewActivity" android:exported="false"
+            android:launchMode="singleTask" android:taskAffinity="lt.stillhome.review"
+            android:excludeFromRecents="true" android:screenOrientation="portrait" />
+        <!-- Loyalty card barcode: shown over the lock screen without unlocking. -->
+        <activity android:name=".ui.BarcodeActivity" android:exported="false"
+            android:showWhenLocked="true" android:turnScreenOn="true"
+            android:taskAffinity="lt.stillhome.card" android:excludeFromRecents="true"
+            android:screenOrientation="portrait" />
+
+        <!-- Foreground service = the lock-screen notification + all timers. -->
+        <service
+            android:name=".service.GuardService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Personal screen-time guard: session timers and lock-screen status" />
+        </service>
+
+        <service
+            android:name=".service.GuardA11yService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility" />
+        </service>
+
+        <service
+            android:name=".notif.NotifService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <receiver android:name=".service.BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".cards.GeofenceReceiver" android:exported="false" />
+    </application>
+</manifest>
