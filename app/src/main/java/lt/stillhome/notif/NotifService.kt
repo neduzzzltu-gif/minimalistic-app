@@ -26,7 +26,7 @@ class NotifService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap) {
         val pkg = sbn.packageName
-        if (pkg == packageName) return
+        if (pkg == packageName || Guard.paused()) return   // guard off: leave every notification alone
         val n = sbn.notification
         if (n.flags and (Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE or Notification.FLAG_GROUP_SUMMARY) != 0) return
         if (Notifs.isSystem(this, pkg)) return

@@ -17,7 +17,9 @@ class App : Application() {
         Store.init(this)
         db = AppDb.get(this)
         createChannels()
+        lt.stillhome.service.Pending.migrate()   // old system allowed several pending changes: keep the newest
         GuardService.start(this)
+        lt.stillhome.core.ScreenTimeWorker.schedule(this)   // daily screen-time snapshot (events only last ~a week)
     }
 
     private fun createChannels() {
@@ -36,6 +38,10 @@ class App : Application() {
         nm.createNotificationChannel(NotificationChannel(CH_DIGEST, "Digest", NotificationManager.IMPORTANCE_DEFAULT).apply {
             setSound(null, null); setShowBadge(true)
         })
+        // "Still want this change?" 1 h after a loosening request (Apply / Cancel buttons).
+        nm.createNotificationChannel(NotificationChannel(CH_PENDING, "Waiting changes", NotificationManager.IMPORTANCE_HIGH).apply {
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+        })
     }
 
     companion object {
@@ -45,5 +51,6 @@ class App : Application() {
         const val CH_ALERT = "alert"
         const val CH_PING = "ping"
         const val CH_DIGEST = "digest"
+        const val CH_PENDING = "pending"
     }
 }

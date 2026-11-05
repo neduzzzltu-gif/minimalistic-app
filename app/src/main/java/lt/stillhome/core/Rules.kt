@@ -3,17 +3,20 @@ package lt.stillhome.core
 import lt.stillhome.App
 import lt.stillhome.data.ChangeRow
 import lt.stillhome.data.Store
+import lt.stillhome.service.Pending
 import kotlin.math.abs
 
 /** Section 8 table: options the user may pick from, defaults and hard ceilings. */
 data class Limit(val budgets: List<Int>, val default: Int, val ceiling: Int, val sessions: List<Int>)
 
 object Limits {
+    /** "Longest session" choices, same for every category (owner, 2026-11-04). Default = the last one (60). */
+    private val SESSIONS = listOf(5, 10, 15, 30, 45, 60)
     val table = mapOf(
-        Cats.SOCIAL to Limit(listOf(15, 30, 45, 60, 90), 45, 90, listOf(5, 10, 15)),
-        Cats.VIDEO to Limit(listOf(30, 45, 60, 90, 120), 60, 120, listOf(5, 10, 15)),
-        Cats.GAMES to Limit(listOf(30, 45, 60, 90), 45, 90, listOf(15, 30, 45)),
-        Cats.SHOPS to Limit(listOf(10, 15, 30), 15, 30, listOf(5, 10)),
+        Cats.SOCIAL to Limit(listOf(15, 30, 45, 60, 90), 45, 90, SESSIONS),
+        Cats.VIDEO to Limit(listOf(30, 45, 60, 90, 120), 60, 120, SESSIONS),
+        Cats.GAMES to Limit(listOf(30, 45, 60, 90), 45, 90, SESSIONS),
+        Cats.SHOPS to Limit(listOf(10, 15, 30), 15, 30, SESSIONS),
     )
     fun of(cat: String) = table.getValue(Cats.budgetCat(cat))
 
@@ -64,8 +67,11 @@ object Blocked {
     }
 
     /** If blocked now: the time the block ends; otherwise null. */
-    fun blockedUntil(now: Long = Clock.now()): Long? {
-        val bits = coverage(windows())
+    fun blockedUntil(now: Long = Clock.now()): Long? = blockedUntil(windows(), now)
+
+    /** Same for any list of windows (app groups have their own). */
+    fun blockedUntil(ws: List<Window>, now: Long): Long? {
+        val bits = coverage(ws)
         val mow = (Clock.dayOfWeek(now).value - 1) * 1440 + Clock.minuteOfDay(now)
         if (!bits[mow]) return null
         var m = mow; var n = 0
@@ -76,15 +82,16 @@ object Blocked {
 }
 
 /**
- * The 24 h rule (section 17). Every change goes through [change]:
- * tightening applies instantly, loosening waits 24 h in a visible, cancellable queue.
+ * The waiting rule (section 17, reworked 2026-11-04). Every change goes through [change]:
+ * tightening applies instantly; loosening becomes the ONE pending change. After [DELAY] a
+ * notification asks "still want it?" and only its Apply (or Apply in Settings) applies it.
+ * Ignored = stays pending forever. ChangeRow.applyAt = the time from which it may be applied.
  */
 object Rules {
-    const val DELAY = 24 * 3600_000L
+    const val DELAY = 3600_000L   // 1 hour
 
     /** Before onboarding finishes everything applies instantly. */
     fun setupDone() = Store.bool("setupDone", false)
-
     fun isLoosening(key: String, old: String?, new: String?): Boolean {
         fun n(s: String?) = s?.toIntOrNull()
         return when {
@@ -97,12 +104,19 @@ object Rules {
                 val nw = Blocked.coverage(new?.split('\n')?.mapNotNull { Window.decode(it) } ?: emptyList())
                 o.andNot(nw); !o.isEmpty   // some minute was blocked before and isn't now
             }
+            key.startsWith("group.") -> Groups.looser(old, new)
             key.startsWith("gray.") -> new == "0" && old != "0"
             key.startsWith("mode.") -> new == "chats" && old != "chats"
+            key == "essay" -> new == "0" && old != "0"   // daily essay off
             key.startsWith("label.") -> {
-                val o = old ?: Cats.UNLABELED; val nn = new ?: Cats.UNLABELED
+                val o = (old ?: Cats.UNLABELED).let {
+                    // an unlabelled system app (e.g. Settings) was never gated, so labelling it is not loosening
+                    if (it == Cats.UNLABELED && !Cats.isGated(App.app, key.removePrefix("label."))) Cats.OTHER else it }
+                val nn = new ?: Cats.UNLABELED
                 // out of a gated category, or between two gated categories (different budget) = loosening
-                Cats.isGatedCat(o) && (!Cats.isGatedCat(nn) || (o != Cats.UNLABELED && o != nn))
+                Cats.isGatedCat(o) && (!Cats.isGatedCat(nn) || (o != Cats.UNLABELED && o != nn)) ||
+                    // leaving a category that a switched-on group blocks
+                    (o != nn && Groups.all().any { g -> g.on && "cat:$o" in g.members && "cat:$nn" !in g.members })
             }
             key.startsWith("domain.") -> old != null && old in Cats.gated && (new == null || new !in Cats.gated)
             key == "lockdown" -> new == "0" && old != "0"
@@ -131,36 +145,61 @@ object Rules {
         else -> v
     }
 
-    /** Propose one change. Returns true if it applied now, false if it is waiting 24 h. */
+    /** Propose one change. Returns true if it applied now, false if it is now the pending change. */
     fun change(key: String, value: String?, description: String): Boolean {
         val dao = App.db.dao()
         val v = clamp(key, value)
         val old = Store.get(key)
+        val pend = dao.pending()
+        // Any new edit of a key replaces what was waiting for it (also "set back to the current value").
+        pend.filter { it.key == key }.forEach { Pending.drop(App.app, it.id) }
         if (old == v) return true
         val now = Clock.now()
-        val loose = setupDone() && isLoosening(key, old, v)
-        // Any new change to a key replaces what was pending for it.
-        dao.pending().filter { it.key == key }.forEach { dao.setChangeStatus(it.id, "cancelled") }
-        return if (!loose) {
+        if (!(setupDone() && isLoosening(key, old, v))) {
             Store.set(key, v)
             dao.insertChange(ChangeRow(time = now, description = description, loosening = false, status = "applied", key = key, value = v))
-            true
-        } else {
-            dao.insertChange(ChangeRow(time = now, description = description, loosening = true, status = "pending",
-                key = key, value = v, applyAt = now + DELAY))
-            false
+            return true
         }
+        // One pending change at a time: a new loosening request cancels every other one and restarts the hour.
+        pend.filter { it.key != key }.forEach { Pending.drop(App.app, it.id) }
+        val id = dao.insertChange(ChangeRow(time = now, description = description, loosening = true, status = "pending",
+            key = key, value = v, applyAt = now + DELAY))
+        Pending.stamp(App.app, id)
+        Pending.schedule(App.app, id, now + DELAY)
+        return false
     }
 
-    fun cancel(id: Long) = App.db.dao().setChangeStatus(id, "cancelled")
-
-    /** Called every minute by the service. */
-    fun applyDue() {
-        val dao = App.db.dao(); val now = Clock.now()
-        dao.pending().filter { it.applyAt <= now }.forEach {
-            Store.set(it.key, clamp(it.key, it.value)); dao.setChangeStatus(it.id, "applied")
-        }
+    /** Would [change] leave this as the pending change (instead of applying it now)? Same value = no. */
+    fun wouldWait(key: String, value: String?): Boolean {
+        val v = clamp(key, value); val old = Store.get(key)
+        return old != v && setupDone() && isLoosening(key, old, v)
     }
+
+    /** Is [key] already set to [value] (after clamping)? Then [change] would do nothing but drop a pending edit of it. */
+    fun same(key: String, value: String?) = Store.get(key) == clamp(key, value)
+
+    fun cancel(id: Long) = Pending.drop(App.app, id)
+
+    /** The hour is over (wall clock AND monotonic clock, so moving the clock forward doesn't help). */
+    fun isDue(c: ChangeRow, now: Long = Clock.now()) = now >= c.applyAt && Pending.monoLeft(App.app, c.id) <= 0
+
+    /** Time until it may be applied (for countdowns). */
+    fun leftMs(c: ChangeRow, now: Long = Clock.now()) = maxOf(c.applyAt - now, Pending.monoLeft(App.app, c.id), 0)
+
+    /** Apply a pending change. Refused (false) before the hour is up or if it's no longer pending. */
+    fun apply(id: Long, durable: Boolean = false): Boolean {
+        val dao = App.db.dao()
+        val c = dao.pending().firstOrNull { it.id == id } ?: return false
+        if (!isDue(c)) return false
+        // durable: from a receiver the process may die right away, so the value must be on disk before "applied".
+        clamp(c.key, c.value).let { if (durable) Store.setDurable(c.key, it) else Store.set(c.key, it) }
+        dao.setChangeStatus(c.id, "applied")
+        Pending.clear(App.app, c.id)
+        return true
+    }
+
+    /** The one waiting change (null = none). */
+    fun current(): ChangeRow? = App.db.dao().pending().firstOrNull()
 
     fun pendingFor(key: String): ChangeRow? = App.db.dao().pending().firstOrNull { it.key == key }
 }

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Stillhome</string>
-    <string name="a11y_description">Stillhome guard: detects gated apps and screens (feeds, Reels, Shorts) and sends you to the Gate. Reads screen structure only; nothing leaves the phone.</string>
+    <string name="a11y_description">Stillhome app blocker: detects gated apps and screens (feeds, Reels, Shorts) and sends you to the Gate. Reads screen structure only; nothing leaves the phone.</string>
 </resources>

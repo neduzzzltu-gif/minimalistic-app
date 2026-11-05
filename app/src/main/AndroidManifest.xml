@@ -16,10 +16,14 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- Delayed settings: the "still want it?" reminder exactly 1 h later. SCHEDULE_EXACT_ALARM needs the user's OK on 33+. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- Granted once over adb (pm grant): needed for the grayscale (daltonizer) toggle. -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
@@ -55,6 +59,32 @@
             </intent-filter>
         </activity>
 
+        <!-- Emergency on/off switch with its own icon, visible in any launcher (no PC needed). -->
+        <activity
+            android:name=".ui.SwitchActivity"
+            android:exported="true"
+            android:label="Stillhome switch"
+            android:taskAffinity="lt.stillhome.switch"
+            android:excludeFromRecents="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".ui.GuardTile"
+            android:exported="true"
+            android:icon="@drawable/ic_stat"
+            android:label="Stillhome blocker"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+
         <!-- Gate / lock / time's up. Own task so it never sits inside the gated app's task. -->
         <activity
             android:name=".ui.GateActivity"
@@ -75,11 +105,18 @@
         <activity android:name=".ui.LabelActivity" android:exported="false"
             android:taskAffinity="lt.stillhome.gate" android:excludeFromRecents="true"
             android:screenOrientation="portrait" />
+        <activity android:name=".ui.UsageActivity" android:exported="false"
+            android:excludeFromRecents="true" android:screenOrientation="portrait" />
         <activity android:name=".ui.DigestActivity" android:exported="false"
             android:excludeFromRecents="true" android:screenOrientation="portrait" />
         <activity android:name=".ui.ReviewActivity" android:exported="false"
             android:launchMode="singleTask" android:taskAffinity="lt.stillhome.review"
             android:excludeFromRecents="true" android:screenOrientation="portrait" />
+        <!-- Daily essay before home (resets 04:00). Own task, not in Recents, Back does nothing. -->
+        <activity android:name=".ui.EssayActivity" android:exported="false"
+            android:launchMode="singleTask" android:taskAffinity="lt.stillhome.essay"
+            android:excludeFromRecents="true" android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
         <!-- Loyalty card barcode: shown over the lock screen without unlocking. -->
         <activity android:name=".ui.BarcodeActivity" android:exported="false"
             android:showWhenLocked="true" android:turnScreenOn="true"
@@ -125,5 +162,7 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".cards.GeofenceReceiver" android:exported="false" />
+        <!-- Pending change: 1 h alarm + the notification's Apply / Cancel. -->
+        <receiver android:name=".service.PendingReceiver" android:exported="false" />
     </application>
 </manifest>

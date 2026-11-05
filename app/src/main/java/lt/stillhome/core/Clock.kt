@@ -17,7 +17,7 @@ object Clock {
     private var baseElapsed = 0L   // elapsedRealtime at last rebase
     private var lastPersist = 0L
 
-    fun now(): Long {
+    @Synchronized fun now(): Long {
         val wall = System.currentTimeMillis()
         val el = SystemClock.elapsedRealtime()
         if (baseWall == 0L) {

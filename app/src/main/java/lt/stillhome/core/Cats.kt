@@ -130,6 +130,10 @@ object Cats {
     }
 
     /** Is this app gated? Chrome itself is not (its gated sites are, see Detectors). */
+    /** Gated when opened from Home / lock screen. Snapchat in chats mode is free; only Spotlight is gated (by the guard). */
+    fun gatedAtLaunch(ctx: android.content.Context, pkg: String) =
+        isGated(ctx, pkg) && !(pkg == lt.stillhome.detect.Detectors.SNAP && lt.stillhome.detect.Detectors.chatsFree(pkg))
+
     fun isGated(ctx: Context, pkg: String): Boolean =
         pkg != CHROME && (of(pkg).let { it != UNLABELED && it in gated } ||
             Store.get("label.pending.$pkg") != null && of(pkg) == UNLABELED || needsLabel(ctx, pkg))

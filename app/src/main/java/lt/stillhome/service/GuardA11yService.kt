@@ -76,7 +76,7 @@ class GuardA11yService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> { checkPip(); return }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 // Content changes only matter inside scoped apps (gated, Chrome, lockdown targets). Throttled for battery.
-                if (!inScope(pkg)) return
+                if (!inScope(pkg) && lt.stillhome.core.Groups.all().none { it.on && it.has(pkg) }) return
                 val t = SystemClock.uptimeMillis()
                 if (t - lastContentCheck < 400) return
                 lastContentCheck = t
@@ -86,20 +86,116 @@ class GuardA11yService : AccessibilityService() {
         }
     }
 
+    private val focusAllowed = setOf("com.android.systemui", "android", "com.android.phone", "com.android.server.telecom",
+        "com.android.incallui", "com.google.android.dialer", "com.android.contacts", "com.google.android.contacts",
+        "com.android.mms", "com.google.android.apps.messaging", "com.android.deskclock", "com.google.android.deskclock",
+        "com.android.permissioncontroller", "com.google.android.permissioncontroller", "com.android.emergency")
+
     private fun inScope(pkg: String) = pkg == Cats.CHROME || pkg in Lockdown.packages || Cats.isGated(this, pkg)
 
+    /** Settings is a lockdown package, but when labelled gated it is gated like any app (not while our own pass runs). */
+    private fun gatableSettings(pkg: String) = pkg == Guard.SETTINGS && !Guard.settingsPass()
+
+    /**
+     * End the Settings pass once Settings was in front and then something else is (home, another app):
+     * opening Settings later from the drawer / recents is gated again. Permission dialogs and the
+     * HyperOS Security app (autostart page) are part of the same trip and don't end it.
+     */
+    private var passSeen = false
+    private var passExtended = 0L
+    private fun settingsPassCheck(pkg: String) {
+        if (pkg == Guard.SETTINGS) {
+            if (!Guard.settingsPass()) return
+            val t = SystemClock.uptimeMillis()
+            if (!passSeen || t - passExtended > 30_000) { Guard.extendSettingsPass(); passExtended = t }   // write at most every 30 s
+            passSeen = true; return
+        }
+        if (passSeen && pkg != "android" && pkg != "com.lbe.security.miui" && !pkg.contains("permissioncontroller") && pkg !in Lockdown.packages) {
+            passSeen = false; Guard.endSettingsPass()
+        }
+    }
+
+    /**
+     * Grant pass: ends once a lockdown page was in front and then something else is (home, another app).
+     * Permission dialogs and HyperOS's power keeper are part of the same trip.
+     */
+    private var grantSeen = false
+    private fun grantPassCheck(pkg: String) {
+        if (Guard.grantPass() == null) { grantSeen = false; return }
+        if (pkg in Lockdown.packages || pkg == "com.miui.powerkeeper") { grantSeen = true; return }
+        if (grantSeen && pkg != "android" && pkg != "com.lbe.security.miui" && !pkg.contains("permissioncontroller")) {
+            grantSeen = false; Guard.endGrantPass()
+        }
+    }
+
+    /** Last activity class seen in front inside a lockdown package (content events carry no class). */
+    private var lockPkg: String? = null
+    private var lockClass: String? = null
+    private fun noteLockClass(pkg: String, eventPkg: String, cls: String?) {
+        if (pkg !in Lockdown.packages) { lockPkg = null; lockClass = null; return }
+        if (pkg != lockPkg) { lockPkg = pkg; lockClass = null }
+        if (pkg != eventPkg || cls == null) return
+        // Dialogs / widgets inside the page don't replace the page's activity.
+        if (cls.startsWith("android.widget.") || cls.startsWith("android.view.") ||
+            (cls.contains("Dialog") && !cls.endsWith("Activity"))) return
+        lockClass = cls
+    }
+
+    private var lastGrantLog: String? = null
+
+    /**
+     * Lockdown exception for our own permission checklist: only while a grant pass runs, only while
+     * that permission is still missing, and only on that step's own grant page (never accessibility,
+     * uninstall or App info with its Force stop button). Once granted, lockdown applies again.
+     */
+    private fun grantOpen(snap: Snapshot?): Boolean {
+        val step = Guard.grantPass() ?: return false
+        if (!Lockdown.grantAllows(step, lockClass, snap)) return false
+        if (!lt.stillhome.ui.stepMissing(this, step)) { Guard.endGrantPass(); return false }
+        return true
+    }
+
+    private fun mentionsUs(s: Snapshot): Boolean = (s.texts.map { it.first } + s.descs).any {
+        it.contains("stillhome", ignoreCase = true) || it.contains(ourLabel, ignoreCase = true)
+    }
+
     /** Re-evaluate whatever is in front now (called after a session expires or focus starts). */
-    fun recheck() = main.post { rootInActiveWindow?.packageName?.toString()?.let { handle(it, null) } }
+    fun recheck() = main.post {
+        val pkg = rootInActiveWindow?.packageName?.toString() ?: return@post
+        // Shade / keyboard: normal events skip these too (they never change what app is "in front").
+        if (pkg == "com.android.systemui" || pkg in imes) return@post
+        handle(pkg, null)
+    }
 
     private fun handle(eventPkg: String, cls: String?) {
+        if (Guard.paused()) { leaveGated(); return }   // master switch off: do nothing at all
         val root = rootInActiveWindow
         val pkg = root?.packageName?.toString() ?: eventPkg
-        if (pkg == packageName) { leaveGated(); return }   // our own Home / Gate
+        settingsPassCheck(pkg)
+        grantPassCheck(pkg)
+        noteLockClass(pkg, eventPkg, cls)
+        if (pkg == packageName) { leaveGated(); return }   // our own Home / Gate (never gates itself)
+
+        // ---- store checkout: Google Wallet is always allowed while you're in a store with a card ----
+        if (pkg == lt.stillhome.cards.CardOpen.WALLET && Store.get("inStoreCard") != null) { leaveGated(); return }
+
+        // ---- whole-phone focus: only calls, messages, the clock and system screens ----
+        if (Guard.focusStrict() && pkg !in focusAllowed && !pkg.contains("inputmethod") && !pkg.contains("dialer")) {
+            leaveGated()
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            toast("Focus mode until ${lt.stillhome.core.fmtHm(Clock.minuteOfDay(Guard.focusUntil()))}")
+            return
+        }
 
         // ---- lockdown (protect the off switch) ----
         if (pkg in Lockdown.packages && Guard.lockdownArmed()) {
-            val why = Lockdown.shouldBlock(pkg, if (pkg == eventPkg) cls else null, root?.let { Snapshot(it) }, ourLabel)
-            if (why != null) {
+            val snap = root?.let { Snapshot(it) }
+            // Home sheet uninstalling ANOTHER app: skip the uninstall-screen rules, unless the screen mentions us.
+            val skipUninstall = Guard.uninstallPass() != null && snap != null && !mentionsUs(snap)
+            val why = Lockdown.shouldBlock(pkg, if (pkg == eventPkg) cls else null, snap, ourLabel, skipUninstall)
+            if (why != null && grantOpen(snap)) {
+                if (lastGrantLog != lockClass) { lastGrantLog = lockClass; Guard.log("lockdown", "$pkg: grant pass (${Guard.grantPass()}) opened $lockClass ($why)") }
+            } else if (why != null) {
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 Guard.log("lockdown", "$pkg: $why")
                 toast("Locked: $ourLabel's settings are protected")
@@ -107,7 +203,13 @@ class GuardA11yService : AccessibilityService() {
             }
         }
 
-        if (!inScope(pkg) || pkg in Lockdown.packages) { leaveGated(); return }
+        // ---- app groups: blocked always / in their time periods, any app (not just gated ones) ----
+        // (system Settings counts like any app here, unless we opened it ourselves)
+        if ((pkg !in Lockdown.packages || gatableSettings(pkg)) && pkg !in focusAllowed && !pkg.contains("inputmethod"))
+            lt.stillhome.core.Groups.blockedNow(this, pkg)?.let { (why, until) ->
+                enforce(Decision.Locked(why, until), pkg, pkg, Cats.of(pkg)); return }
+
+        if (!inScope(pkg) || (pkg in Lockdown.packages && !(gatableSettings(pkg) && Cats.isGated(this, pkg)))) { leaveGated(); return }
 
         // ---- brand-new app: label it first ----
         if (Cats.needsLabel(this, pkg)) {
@@ -194,7 +296,8 @@ class GuardA11yService : AccessibilityService() {
     fun timesUp(target: String, pkg: String, sessionId: Long) {
         main.post {
             lastPip = 0; checkPip()
-            if (fg?.target != target) return@post
+            // Only throw you out if you're still on the timed screen (e.g. Spotlight), not in Snapchat chats.
+            if (fg?.target != target || fg?.screen?.kind == Kind.FREE) return@post
             leaveGated()
             goHomeThen(Intent(this, GateActivity::class.java).putExtra("mode", "timesup")
                 .putExtra("target", target).putExtra("pkg", pkg).putExtra("session", sessionId))
@@ -222,6 +325,7 @@ class GuardA11yService : AccessibilityService() {
 
     /** Also called by GuardService when a session ends or focus starts. */
     fun checkPip() {
+        if (Guard.paused()) return
         val pip = windows.firstOrNull { it.isInPictureInPictureMode } ?: return
         val pkg = pipPackage(pip)
         android.util.Log.d("StillPip", "pip window title=${pip.title} pkg=$pkg")

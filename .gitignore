@@ -8,3 +8,4 @@ dumps/
 test_screen.png
 test_ui.xml
 *.apk
+.kotlin/

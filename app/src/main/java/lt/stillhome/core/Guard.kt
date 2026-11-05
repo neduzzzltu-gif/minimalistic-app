@@ -26,10 +26,34 @@ object Guard {
     fun inBaseline() = phase() == "baseline"
     fun rulesActive() = phase() == "active"
 
+    /**
+     * Emergency master switch (guard off). Instant, no 24 h rule: the owner asked for a way to turn
+     * everything off without a PC (e.g. on holiday). Reachable from the "Stillhome switch" icon,
+     * the Quick Settings tile and Settings.
+     */
+    fun paused() = Store.bool("guardOff", false)
+    fun setPaused(off: Boolean) { Store.set("guardOff", if (off) "1" else "0"); log("switch", if (off) "App blocker turned off" else "App blocker turned on") }
+
+    /** Limits are off for now (owner, 2026-10-30): no budgets, cooldowns, blocked hours or auto-tighten.
+     *  The Gate still asks why + how long. Turning them back on is instant (Settings). */
+    fun limitsOn() = Store.bool("limitsOn", false)
+
     fun focusUntil() = Store.long("focusUntil", 0)
     fun focusActive(now: Long = Clock.now()) = focusUntil() > now
+    /** "Lock the whole phone" focus: every app except calls, messages and the clock is locked, and it can't be ended early. */
+    fun focusStrict(now: Long = Clock.now()) = focusActive(now) && Store.bool("focusStrict", false)
+    fun startFocus(min: Int, strict: Boolean) {
+        Store.setAll(mapOf("focusUntil" to (Clock.now() + min * 60_000L).toString(), "focusStrict" to if (strict) "1" else "0"))
+        log("focus", "Focus $min min" + if (strict) " (whole phone locked)" else "")
+    }
+    /** Ending early is only allowed for a normal focus. */
+    fun endFocus(): Boolean {
+        if (!focusActive() || focusStrict()) return false
+        Store.set("focusUntil", "0"); log("focus", "Focus ended early"); return true
+    }
 
     fun lockdownArmed(now: Long = Clock.now()): Boolean {
+        if (paused()) return false
         val at = Store.long("lockdownAt", 0)
         return at > 0 && now >= at && Store.str("lockdown", "1") != "0"
     }
@@ -93,20 +117,44 @@ object Guard {
         log("pass", "Checkout pass: $pkg at $store")
     }
 
+    // ---------- system Settings pass (our own deep links into Settings) ----------
+    const val SETTINGS = "com.android.settings"
+    /** Settings may be labelled + gated like any app, but pages WE open (permissions, app info...) must not be. */
+    fun settingsPass(now: Long = Clock.now()) = Store.long("settingsPassUntil", 0) > now
+    /** Void unless Settings shows up within 10 s; then [extendSettingsPass] keeps it going. */
+    fun startSettingsPass() { val now = Clock.now(); Store.setAll(mapOf("settingsPassStart" to "$now", "settingsPassUntil" to "${now + 10_000}")) }
+    /** While Settings stays in front: 3 more min, hard cap 15 min after the start. */
+    fun extendSettingsPass(now: Long = Clock.now()) =
+        Store.set("settingsPassUntil", minOf(now + 3 * 60_000, Store.long("settingsPassStart", now) + 15 * 60_000).toString())
+    fun endSettingsPass() { if (Store.get("settingsPassUntil") != null) Store.setAll(mapOf("settingsPassUntil" to null, "settingsPassStart" to null)) }
+
+    // ---------- grant pass (lockdown exception for the permission checklist) ----------
+    /**
+     * Our checklist opened the page that grants permission [step]. While it runs (2 min, never extended)
+     * and that permission is still missing, lockdown lets exactly that page through
+     * (see [lt.stillhome.detect.Lockdown.grantAllows]). Granted or expired = lockdown as usual.
+     */
+    fun startGrantPass(step: String) = Store.setAll(mapOf("grantPassStep" to step, "grantPassUntil" to "${Clock.now() + 2 * 60_000}"))
+    fun grantPass(now: Long = Clock.now()): String? = Store.get("grantPassStep")?.takeIf { Store.long("grantPassUntil", 0) > now }
+    fun endGrantPass() { if (Store.get("grantPassStep") != null) Store.setAll(mapOf("grantPassStep" to null, "grantPassUntil" to null)) }
+
+    // ---------- uninstall pass (home sheet uninstalling another app while lockdown is armed) ----------
+    /** Never for ourselves: refused here, and the a11y service also refuses any screen that mentions us. */
+    fun startUninstallPass(pkg: String) {
+        if (pkg == lt.stillhome.App.app.packageName) return
+        Store.setAll(mapOf("uninstallPassPkg" to pkg, "uninstallPassUntil" to "${Clock.now() + 60_000}"))
+    }
+    fun uninstallPass(now: Long = Clock.now()): String? = Store.get("uninstallPassPkg")?.takeIf { Store.long("uninstallPassUntil", 0) > now }
+
     // ---------- the decision ----------
     fun decide(target: String, pkg: String, cat: String, now: Long = Clock.now()): Decision {
-        if (passActive(pkg, now)) return Decision.Allow
+        if (paused() || passActive(pkg, now) || (pkg == SETTINGS && settingsPass(now))) return Decision.Allow
         if (focusActive(now)) return Decision.Locked("Focus mode", focusUntil())   // focus beats running sessions
+        // App groups: blocked always or in their time periods (beats running sessions too).
+        Groups.blockedNow(lt.stillhome.App.app, pkg, now)?.let { return Decision.Locked(it.first, it.second) }
         if (session(target, now) != null) return Decision.Allow
-        val opts = Limits.sessionOptions(cat)
-        if (!rulesActive()) return Decision.Gate(opts, Int.MAX_VALUE)   // setup + baseline: track only
-        Blocked.blockedUntil(now)?.let { return Decision.Locked("Blocked hours", it) }
-        val remaining = remainingMin(cat, now)
-        val fit = opts.filter { it <= remaining }
-        if (fit.isEmpty()) return Decision.Locked("Today's ${Cats.budgetCat(cat)} budget is used up",
-            Clock.startOfDay(Clock.date(now).plusDays(1)))
-        cooldownUntil(cat, now)?.let { return Decision.Locked("Cooldown after your last ${Cats.budgetCat(cat)} session", it) }
-        return Decision.Gate(fit, remaining)
+        // No daily budgets or cooldowns any more (owner, 2026-11-03): the Gate just asks why + how long.
+        return Decision.Gate(Limits.sessionOptions(cat), Int.MAX_VALUE)
     }
 
     fun log(type: String, text: String) = dao.insertEvent(EventRow(time = Clock.now(), type = type, text = text))

@@ -19,6 +19,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
 import lt.stillhome.App
+import lt.stillhome.core.Clock
 import lt.stillhome.data.Store
 import lt.stillhome.service.GuardService
 import org.json.JSONArray
@@ -79,7 +80,8 @@ object Geo {
             .sortedBy { s -> loc?.let { dist(it.latitude, it.longitude, s.lat, s.lon) } ?: 0f }
             .take(MAX)
         val fences = list.mapIndexed { i, s ->
-            Geofence.Builder().setRequestId("s:$i:${s.brand}:${s.name}")
+            // Stable id (position, not list index) so a refresh while inside the store still matches on exit.
+            Geofence.Builder().setRequestId("s:${"%.5f_%.5f".format(java.util.Locale.ROOT, s.lat, s.lon)}:${s.brand}:${s.name}")
                 .setCircularRegion(s.lat, s.lon, 100f)
                 .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_DWELL or Geofence.GEOFENCE_TRANSITION_EXIT)
                 .setLoiteringDelay(60_000)
@@ -99,14 +101,24 @@ object Geo {
     /** Called when a store fence fires. */
     fun enter(ctx: Context, brand: String, name: String, fenceId: String) {
         val card = App.db.dao().cards().firstOrNull { it.brand == brand } ?: return
-        Store.setAll(mapOf("inStoreCard" to card.id.toString(), "inStoreBrand" to brand, "inStoreName" to name, "inStoreFence" to fenceId))
+        // Fences re-fire while you stay: notify once per visit. A visit older than 3 h is over even if its exit got lost.
+        val already = Store.get("inStoreBrand") == brand && Clock.now() - Store.long("inStoreAt", 0) < 3 * 3600_000L
+        Store.setAll(mapOf("inStoreCard" to card.id.toString(), "inStoreBrand" to brand, "inStoreName" to name, "inStoreFence" to fenceId,
+            "inStoreAt" to (if (already) Store.get("inStoreAt") else Clock.now().toString())))
         GuardService.refresh(ctx)
+        if (!already) CardOpen.notifyArrival(ctx, card, name.removeSuffix(" (saved)"))
     }
 
     fun exit(ctx: Context, fenceId: String) {
         if (Store.get("inStoreFence") != fenceId) return
-        Store.setAll(mapOf("inStoreCard" to null, "inStoreBrand" to null, "inStoreName" to null, "inStoreFence" to null))
+        leaveStore(ctx)
+    }
+
+    /** Forget the current store visit: home button, notification card action and arrival heads-up all go. */
+    fun leaveStore(ctx: Context) {
+        Store.setAll(mapOf("inStoreCard" to null, "inStoreBrand" to null, "inStoreName" to null, "inStoreFence" to null, "inStoreAt" to null))
         GuardService.refresh(ctx)
+        CardOpen.clearArrival(ctx)
     }
 }
 

@@ -95,16 +95,20 @@ object Detectors {
     private fun snapchat(s: Snapshot): Screen {
         val title = s.topText(snapChat + snapStories + snapSpot)
         val opera = s.descStarts("opera_content_index")
+        // Owner's call (2026-10-31): Snapchat is free to use; only Spotlight (Snap's reels) goes through the Gate.
         return when {
-            s.descs.any { it == "Snap Map" } -> Screen(Kind.METERED, "Map")
-            title in snapStories -> Screen(Kind.METERED, "Stories")
             title in snapSpot -> Screen(Kind.METERED, "Spotlight")
+            s.descs.any { it == "Snap Map" } -> Screen(Kind.FREE, "Map")
+            title in snapStories -> Screen(Kind.FREE, "Stories")
             s.has("chat_input_text_field") -> Screen(Kind.FREE, "Chat thread")
             title in snapChat -> Screen(Kind.FREE, if (opera) "Snap from a friend" else "Chats")
             s.has("profile_identity_section_display_name") -> Screen(Kind.FREE, "Friend profile")
-            opera -> Screen(Kind.METERED, "Story viewer")
+            opera -> Screen(Kind.FREE, "Story viewer")
             s.has("camera_capture_button", "camera_page") -> Screen(Kind.FREE, "Camera")
-            else -> Screen(Kind.UNKNOWN, "unknown")
+            else -> {   // free, but log it: if Snapchat renames "Spotlight", this is where it would show up
+                android.util.Log.d("StillDetector", "snap other ids=${s.ids.sorted().take(40)}")
+                Screen(Kind.FREE, "other")
+            }
         }
     }
 

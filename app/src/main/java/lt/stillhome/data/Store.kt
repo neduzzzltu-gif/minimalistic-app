@@ -12,6 +12,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -51,9 +52,8 @@ object Store {
 
     fun setAll(changes: Map<String, String?>) {
         if (changes.isEmpty()) return
-        val m = _map.value.toMutableMap()
-        changes.forEach { (k, v) -> if (v == null) m.remove(k) else m[k] = v }
-        _map.value = m
+        // Atomic read-modify-write: the a11y service, GuardService ticks and receivers write from other threads.
+        _map.update { cur -> cur.toMutableMap().also { m -> changes.forEach { (k, v) -> if (v == null) m.remove(k) else m[k] = v } } }
         io.launch {
             ds.edit { p ->
                 changes.forEach { (k, v) ->
@@ -62,6 +62,12 @@ object Store {
                 }
             }
         }
+    }
+
+    /** Like [set], but returns only once it's on disk (broadcast receivers: the process may die right after). */
+    fun setDurable(key: String, value: String?) {
+        set(key, value)
+        runBlocking { ds.edit { p -> stringPreferencesKey(key).let { k -> if (value == null) p.remove(k) else p[k] = value } } }
     }
 
     fun setList(key: String, values: List<String>) = set(key, values.joinToString("\n"))

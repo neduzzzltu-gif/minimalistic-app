@@ -80,7 +80,21 @@ object Apps {
             .also { cache = it }
     }
 
-    fun invalidate() { cache = null }
+    /** Bumped on every invalidate so open lists (the drawer) re-read after an install/uninstall. */
+    val version = androidx.compose.runtime.mutableIntStateOf(0)
+
+    fun invalidate() { cache = null; android.os.Handler(android.os.Looper.getMainLooper()).post { version.intValue++ } }
+
+    /** Hidden apps: still installed and in [all], just left out of the drawer, search and home pins. */
+    fun hidden(): Set<String> = Store.list("hiddenApps").toSet()
+    private fun join(l: List<String>) = l.joinToString("\n")
+    /** Hiding also unpins it, so it doesn't keep a home / lock-screen slot. */
+    fun hide(pkg: String) = Store.setAll(mapOf("hiddenApps" to join(Store.list("hiddenApps") - pkg + pkg),
+        "homeApps" to join(Store.list("homeApps") - pkg), "quickApps" to join(Store.list("quickApps") - pkg)))
+
+    /** Uninstalled: drop it from every app list we keep. */
+    fun forget(pkg: String) = Store.setAll(listOf("homeApps", "quickApps", "hiddenApps").associateWith { join(Store.list(it) - pkg) })
+    fun unhide(pkg: String) = Store.setList("hiddenApps", Store.list("hiddenApps") - pkg)
 
     fun label(ctx: Context, pkg: String): String =
         cache?.firstOrNull { it.pkg == pkg }?.label ?: try {

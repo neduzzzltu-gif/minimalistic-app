@@ -44,7 +44,7 @@ class ReviewActivity : BlackActivity() {
         val guess = Store.str("quiz.guessH", "?")
         Page {
             Title("Baseline week done")
-            T("You guessed ${guess} h/day. Real: ${fmtDur(avgScreen * 60_000L)}/day.", 18.sp, White)
+            T("You guessed ${hoursText(guess)}/day. Real: ${fmtDur(avgScreen * 60_000L)}/day.", 18.sp, White)
             Section("Budgets set (70% of your baseline)")
             Cats.budgeted.forEach { T("$it: ${Limits.budget(it)} min/day", 16.sp) }
             Section("Now active")
@@ -77,7 +77,7 @@ class ReviewActivity : BlackActivity() {
             Section("Phone time per day")
             screen.forEach { T("${it.day}: ${fmtDur(it.seconds * 1000)}", 15.sp) }
             val avg = if (screen.isEmpty()) 0 else screen.sumOf { it.seconds } / 60 / screen.size
-            T("Average ${fmtDur(avg * 60_000)} · guess ${Store.str("quiz.guessH", "?")} h · target ${fmtDur(Store.int("targetMin", 120) * 60_000L)}", 15.sp, White)
+            T("Average ${fmtDur(avg * 60_000)} · guess ${hoursText(Store.str("quiz.guessH", "?"))} · goal ${fmtDur(Store.int("targetMin", 120) * 60_000L)}", 15.sp, White)
 
             Section("Gated minutes per category per day")
             meters.groupBy { it.day }.toSortedMap().forEach { (d, l) ->

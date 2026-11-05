@@ -79,6 +79,8 @@ class GuardService : Service() {
         override fun onReceive(c: Context, i: Intent) {
             Apps.invalidate()
             val pkg = i.data?.schemeSpecificPart ?: return
+            // Real uninstall (not an update): unpin / unhide it so home never shows a raw package name.
+            if (i.action == Intent.ACTION_PACKAGE_REMOVED && !i.getBooleanExtra(Intent.EXTRA_REPLACING, false)) Apps.forget(pkg)
             if (i.action == Intent.ACTION_PACKAGE_ADDED && !i.getBooleanExtra(Intent.EXTRA_REPLACING, false) &&
                 Cats.needsLabel(c, pkg)) {
                 // Ask for a label right away; until then the app stays gated.
@@ -127,6 +129,13 @@ class GuardService : Service() {
         tickCount++
         val now = Clock.now()
 
+        if (Guard.paused()) {   // master switch off: only keep counting screen time
+            if (screenOn) screenBuf++
+            if (tickCount % 30 == 0L) flush()
+            if (tickCount % 60 == 1L) notifyStatus()
+            return
+        }
+
         // 1. sessions that just ran out -> Home + "Time's up" (enforced here, not by the launcher UI)
         for (s in Guard.expireDue(now)) {
             Store.setAll(mapOf("intentCheck" to s.id.toString(), "intentCheckAt" to now.toString()))
@@ -139,11 +148,11 @@ class GuardService : Service() {
             notifyStatus()
         }
 
-        // 2. warning before the end: 1 min (Games: 5 min)
+        // 2. warning before the end: 1 min (Games: 5 min); only for sessions longer than the warning itself
         for (s in Guard.openSessions()) {
             val warnMs = if (s.category == Cats.GAMES) 5 * 60_000L else 60_000L
-            if (s.plannedEnd - now in 1..warnMs && warned.add(s.id))
-                alert("${(warnMs / 60_000)} min left", "${label(s.target)} session ends at ${fmtHm(Clock.minuteOfDay(s.plannedEnd))}", null)
+            if (s.plannedMin * 60_000L > warnMs && s.plannedEnd - now in 1..warnMs && warned.add(s.id))
+                alert("${((s.plannedEnd - now + 59_999) / 60_000)} min left", "${label(s.target)} session ends at ${fmtHm(Clock.minuteOfDay(s.plannedEnd))}", null)
         }
 
         // 3. metering (metered/unknown screen in front, screen on) + own screen-on time
@@ -163,13 +172,15 @@ class GuardService : Service() {
     }
 
     private fun minute(now: Long) {
-        Rules.applyDue()
+        Pending.remindDue(this)   // safety net for the "still want it?" alarm (never auto-applies)
+        GuardA11yService.instance?.recheck()   // a group's blocked time may have just started for the app in front
         notifyStatus()
         digestTimes(now)
         weeklyReview(now)
         baselineEnd(now)
         autoTighten(now)
         passExpiry(now)
+        lt.stillhome.core.ScreenTime.catchUpDaily(this)   // once a day: the launcher process can live for weeks
         if (tickCount % 3600 == 1L) { App.db.dao().pruneDigest(now - 14 * 86400_000L); App.db.dao().pruneNotifLog(now - 60 * 86400_000L) }
     }
 
@@ -226,7 +237,7 @@ class GuardService : Service() {
     }
 
     private fun autoTighten(now: Long) {
-        if (!Guard.rulesActive()) return
+        if (!Guard.rulesActive() || !Guard.limitsOn()) return
         val last = Store.long("tighten.last", 0)
         if (last == 0L) { Store.set("tighten.last", now.toString()); return }
         if (now - last < 7 * 86400_000L) return
@@ -267,15 +278,17 @@ class GuardService : Service() {
             .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
 
         val session = Guard.openSessions().filter { now < it.plannedEnd }.minByOrNull { it.plannedEnd }
-        if (session != null) {
+        if (Guard.paused()) {
+            b.setContentTitle("App blocker off").setContentText("Tap “Stillhome switch” or the quick tile to turn it back on")
+        } else if (session != null) {
             // "[App] · mm:ss left" — the chronometer counts down by itself between our minute updates.
             b.setContentTitle("${label(session.target)} · time left")
                 .setUsesChronometer(true).setChronometerCountDown(true).setWhen(session.plannedEnd).setShowWhen(true)
         } else {
             val today = App.db.dao().screenSince(Clock.day()).sumOf { it.seconds } * 1000 + screenBuf * 1000
             val target = Store.int("targetMin", 120)
-            var line = "${fmtDur(today)} today · target ${fmtDur(target * 60_000L)}"
-            if (Guard.focusActive(now)) line = "Focus until ${fmtHm(Clock.minuteOfDay(Guard.focusUntil()))} · $line"
+            var line = "${fmtDur(today)} today (goal ${fmtDur(target * 60_000L)})"
+            if (Guard.focusActive(now)) line = "Focus until ${fmtHm(Clock.minuteOfDay(Guard.focusUntil()))}, $line"
             b.setContentTitle(line)
         }
 
@@ -283,12 +296,12 @@ class GuardService : Service() {
         val actions = ArrayList<Notification.Action>()
         Store.get("inStoreCard")?.toLongOrNull()?.let { id ->
             App.db.dao().card(id)?.let { card ->
-                val pi = PendingIntent.getActivity(this, 100, Intent(this, BarcodeActivity::class.java).putExtra("card", id)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                val pi = PendingIntent.getActivity(this, 100, lt.stillhome.cards.CardOpen.intent(this, id),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
                 actions.add(Notification.Action.Builder(null, "${card.name} card", pi).build())
             }
         }
-        for ((i, pkg) in Store.list("quickApps").filter { !Cats.isGated(this, it) }.withIndex()) {
+        for ((i, pkg) in Store.list("quickApps").filter { !Cats.gatedAtLaunch(this, it) }.withIndex()) {
             if (actions.size >= 3) break
             val li = packageManager.getLaunchIntentForPackage(pkg) ?: continue
             val pi = PendingIntent.getActivity(this, 200 + i, li, PendingIntent.FLAG_IMMUTABLE)

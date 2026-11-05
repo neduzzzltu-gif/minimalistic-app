@@ -5,6 +5,9 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -21,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import lt.stillhome.App
 import lt.stillhome.core.Apps
 import lt.stillhome.core.Blocked
@@ -67,9 +71,24 @@ class OnboardingActivity : BlackActivity() {
         page = when (start) { "sas" -> 100; "quiz" -> 1; else -> if (Store.bool("setupDone", false)) 1 else 0 }
         setContent {
             BackHandler { if (page in 2..99) page-- else finish() }
-            when (page) {
+            // Questions slide in from the side you're heading (back = from the left) and fade; off when
+            // the phone's animations are off.
+            val calm = android.provider.Settings.Global.getFloat(contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+            androidx.compose.animation.AnimatedContent(page, transitionSpec = {
+                val dir = if (targetState > initialState) 1 else -1
+                val t = if (calm) 0 else 220
+                (androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(t, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { dir * it / 6 } +
+                    androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(t))) togetherWith
+                    (androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(t, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -dir * it / 6 } +
+                        androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(t / 2)))
+            }, label = "quiz") { p ->
+              // The page sliding out stays on screen ~220 ms: block its buttons so a fast double tap can't save twice.
+              androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().then(if (p == page) androidx.compose.ui.Modifier
+                  else androidx.compose.ui.Modifier.pointerInput(Unit) { awaitPointerEventScope { while (true)
+                      awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.forEach { it.consume() } } })) {
+              when (p) {
                 0 -> Welcome()
-                in 1..7 -> Question(page)
+                in 1..7 -> Question(p)
                 8 -> SasPage(optional = true) { page = 9 }
                 9 -> Summary()
                 10 -> LabelSetup()
@@ -84,7 +103,7 @@ class OnboardingActivity : BlackActivity() {
                 14 -> Page { Title("Permissions"); Permissions(this@OnboardingActivity); Btn("Next") { page = 15 } }
                 15 -> BaselineChoice()
                 100 -> SasPage(optional = false) { finish() }
-            }
+            } } }
         }
     }
 
@@ -101,7 +120,10 @@ class OnboardingActivity : BlackActivity() {
     }
 
     // ---------------- quiz ----------------
-    private val goalsOpts = listOf("sleep", "focus", "sport", "time with friends", "mood", "a project")
+    private val goalsOpts = listOf("Have more time", "Time drain", "Sleep", "Attention span", "Compulsive checking", "Procrastination",
+        "Anxiety and low mood", "Comparison", "Doomscrolling stress", "Real life feels boring", "Weaker self-control",
+        "Validation dependence", "Worse learning", "Loneliness", "Half-present with people", "Hijacked mornings", "FOMO",
+        "Algorithm-shaped opinions", "Fewer real skills", "Lost sense of time", "No boredom, no thinking")
     private val pullOpts = listOf("Endless feeds", "Likes & comments", "Streaks", "Stories", "Waiting for replies")
     private val whenOpts = listOf("In bed", "Right after waking", "School breaks", "While studying", "When bored")
     private val forOpts = listOf("Messages", "A video", "Checking something", "Nothing specific")
@@ -116,6 +138,14 @@ class OnboardingActivity : BlackActivity() {
     }
 
     @Composable private fun Rule(text: String) = T("→ $text", 14.sp, White)
+
+    /** Hour answers by sliding in 15-minute steps; stored as hours ("2.25") like the old chips. */
+    @Composable private fun HoursSlider(key: String, options: List<Int>, default: Int) {
+        androidx.compose.runtime.LaunchedEffect(key) { if (a[key] == null) a[key] = hoursOf(default) }
+        val cur = a[key]?.toDoubleOrNull()?.let { (it * 60).toInt() } ?: default
+        TimeSlider(options, cur, onChange = { a[key] = hoursOf(it) })
+    }
+    private fun hoursOf(min: Int) = (min / 60.0).toString().removeSuffix(".0")
 
     @Composable private fun OtherField(key: String) {
         val v = a["$key.other"] ?: ""
@@ -140,21 +170,19 @@ class OnboardingActivity : BlackActivity() {
         when (q) {
             1 -> {
                 Title("How many hours a day do you think you spend on your phone?")
-                Chips((1..10).map { "$it" } + "10+", setOfNotNull(a["guess"])) { a["guess"] = it }
-                OtherField("q1")
-                a["guess"]?.let { Rule("Shown next to your real number after the baseline week") }
+                HoursSlider("guess", (1..48).map { it * 15 },
+                    Store.str("quiz.guessH", "").toDoubleOrNull()?.let { ((it * 4).roundToInt() * 15).coerceIn(15, 720) } ?: 180)   // 15 min to 12 h
+                (a["guess"] ?: "").let { Rule("Shown next to your real number after the baseline week") }
             }
             2 -> {
                 Title("How many hours a day do you want?")
-                Chips(listOf("1", "1.5", "2", "2.5", "3", "4"), setOfNotNull(a["want"])) { a["want"] = it }
-                OtherField("q2")
-                a["want"]?.let { Rule("Target ${it} h: on home + lock screen; weekly auto-tighten stops once your average is below it") }
+                HoursSlider("want", (2..24).map { it * 15 }, Store.int("targetMin", 120).coerceIn(30, 360))   // retake keeps your goal   // 30 min to 6 h
+                (a["want"] ?: hoursOf(Store.int("targetMin", 120))).let { Rule("Goal ${hoursText(it)}: on home + lock screen; weekly auto-tighten stops once your average is below it") }
             }
             3 -> {
                 Title("What do you want to improve?")
                 val s = m["goals"] ?: emptySet()
                 Chips(goalsOpts, s) { m["goals"] = if (it in s) s - it else s + it }
-                OtherField("q3")
                 if (s.isNotEmpty() || !a["q3.other"].isNullOrBlank()) Rule("Each goal gets a 1–5 rating in the Sunday review")
             }
             4 -> {
@@ -181,7 +209,6 @@ class OnboardingActivity : BlackActivity() {
                     T("Instagram: Settings → Messages and story replies → Show read receipts: off\nWhatsApp: Settings → Privacy → Read receipts: off\n" +
                         "Messenger: Settings → Privacy & safety → Read receipts: off\nSnapchat: not possible", 13.sp, Dim)
                 }
-                OtherField("q4")
             }
             5 -> {
                 Title("When do you scroll most?")
@@ -192,7 +219,6 @@ class OnboardingActivity : BlackActivity() {
                 if ("School breaks" in s) Rule("School block hours: confirm on the summary page")
                 if ("While studying" in s) Rule("“focus” shortcut on home")
                 if ("When bored" in s) Rule("Gate countdown 20 s")
-                OtherField("q5")
             }
             6 -> {
                 Title("What do you open the phone for, then end up scrolling?")
@@ -202,7 +228,6 @@ class OnboardingActivity : BlackActivity() {
                 if ("A video" in s) Rule("Video budget → lowest option (30 min)")
                 if ("Checking something" in s) Rule("Gate reason minimum 30 characters")
                 if ("Nothing specific" in s) Rule("Gate countdown 20 s")
-                OtherField("q6")
             }
             7 -> {
                 Title("Who or what should never be filtered?")
@@ -214,7 +239,6 @@ class OnboardingActivity : BlackActivity() {
                 T("Contacts (names as they appear in notifications, comma separated)", 14.sp, Dim)
                 Field(a["contacts"] ?: Store.list("neverFilterContacts").joinToString(", "), { a["contacts"] = it }, "Mom, Dad")
                 Rule("Always ping, whatever else is set")
-                OtherField("q7")
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -247,7 +271,7 @@ class OnboardingActivity : BlackActivity() {
         val out = ArrayList<Triple<String, String?, String>>()
         val pull = m["pull"] ?: emptySet(); val wh = m["when"] ?: emptySet(); val fo = m["for"] ?: emptySet()
         val others = (1..7).mapNotNull { a["q$it.otherRule"] }
-        a["want"]?.let { out += Triple("targetMin", ((it.toDouble()) * 60).toInt().toString(), "Target $it h/day") }
+        a["want"]?.let { out += Triple("targetMin", ((it.toDouble()) * 60).toInt().toString(), "Goal ${hoursText(it)}/day") }
         a["guess"]?.let { Store.set("quiz.guessH", it) }
         if ("Endless feeds" in pull) (m["feeds"] ?: setOf(Cats.SOCIAL)).forEach {
             out += Triple("budget.$it", Limits.of(it).budgets.first().toString(), "$it budget → lowest (quiz: endless feeds)") }
@@ -290,10 +314,26 @@ class OnboardingActivity : BlackActivity() {
             }
             Spacer(Modifier.height(16.dp))
             Btn("Apply") {
-                var waiting = 0
-                props.forEach { (k, v, d) -> if (!Rules.change(k, v, d)) waiting++ }
+                // Only one looser change can wait at a time (Rules.change replaces it), so: tightenings apply now,
+                // at most ONE loosening is queued, and an existing pending change is never replaced silently.
+                val todo = props.filter { (k, v, _) -> !Rules.same(k, v) }   // unchanged: leave any pending edit of it alone
+                val (loose, tight) = todo.partition { (k, v, _) -> Rules.wouldWait(k, v) }
+                val before = Rules.current()
+                tight.forEach { (k, v, d) -> Rules.change(k, v, d) }
+                val replaced = before?.takeIf { b -> tight.any { it.first == b.key } }   // a new edit of its key replaced it
+                val stillWaiting = Rules.current()
+                val queued = if (stillWaiting == null) loose.firstOrNull()?.also { (k, v, d) -> Rules.change(k, v, d) } else null
+                val skipped = loose.filter { it !== queued }
                 applyFlags(goals)
-                if (waiting > 0) Toast.makeText(this@OnboardingActivity, "$waiting looser rule(s) wait 24 h", Toast.LENGTH_LONG).show()
+                val msg = buildList {
+                    replaced?.let { add("Replaced the waiting change “${it.description}”.") }
+                    queued?.let { add("Waiting 1 h: ${it.third}.") }
+                    if (skipped.isNotEmpty()) add(
+                        (if (queued == null && stillWaiting != null) "Already waiting: “${stillWaiting.description}”. " else "") +
+                        "Only one looser change can wait at a time, so not queued: " + skipped.joinToString("; ") { it.third } +
+                        ". Change them in Settings later.")
+                }
+                if (msg.isNotEmpty()) Toast.makeText(this@OnboardingActivity, msg.joinToString(" "), Toast.LENGTH_LONG).show()
                 page = if (Store.bool("setupDone", false)) { finish(); 9 } else 10
             }
         }
@@ -335,7 +375,7 @@ class OnboardingActivity : BlackActivity() {
     @Composable private fun PickList(key: String, max: Int, next: () -> Unit) {
         var cur by remember { mutableStateOf(Store.list(key)) }
         T("Up to $max. Apps from gated categories can't be pinned.", 14.sp, Dim)
-        val apps = Apps.all(this).filter { !Cats.isGated(this, it.pkg) }
+        val apps = Apps.all(this).filter { !Cats.gatedAtLaunch(this, it.pkg) }
         Chips(apps.map { it.label }, apps.filter { it.pkg in cur }.map { it.label }.toSet()) { l ->
             val p = apps.first { it.label == l }.pkg
             cur = if (p in cur) cur - p else if (cur.size < max) cur + p else cur

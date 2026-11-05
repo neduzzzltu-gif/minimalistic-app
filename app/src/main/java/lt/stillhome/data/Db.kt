@@ -79,6 +79,18 @@ data class ChangeRow(
     val status: String, val key: String = "", val value: String? = null, val applyAt: Long = 0,
 )
 
+/** Per-day, per-app screen time snapshot (from UsageEvents RESUMED/PAUSED pairs). day = "2026-11-04". */
+@Entity(primaryKeys = ["day", "pkg"])
+data class AppDayRow(val day: String, val pkg: String, val ms: Long, val opens: Int)
+
+/** A day whose snapshot was saved (so a day with 0 use is "known", not "missing"). final = the day is over. */
+@Entity
+data class DaySavedRow(@PrimaryKey val day: String, val savedAt: Long, val final: Boolean)
+
+/** The daily essay. day = essay day (resets 04:00). */
+@Entity
+data class EssayRow(@PrimaryKey(autoGenerate = true) val id: Long = 0, val day: String, val time: Long, val prompt: String, val text: String, val words: Int)
+
 /** Generic event log: checkout passes, detector failures, lockdown hits, SAS scores, goal ratings... */
 @Entity
 data class EventRow(@PrimaryKey(autoGenerate = true) val id: Long = 0, val time: Long, val type: String, val text: String)
@@ -141,12 +153,27 @@ interface Dao_ {
     @Insert fun insertEvent(e: EventRow)
     @Query("SELECT * FROM EventRow WHERE type = :type ORDER BY time DESC LIMIT :n") fun events(type: String, n: Int = 50): List<EventRow>
     @Query("SELECT * FROM EventRow WHERE time >= :from ORDER BY time") fun eventsSince(from: Long): List<EventRow>
+
+    // per-app daily screen time (screen time tab)
+    @Upsert fun upsertAppDays(rows: List<AppDayRow>)
+    @Query("DELETE FROM AppDayRow WHERE day = :day") fun clearAppDay(day: String)
+    @Query("SELECT * FROM AppDayRow WHERE day >= :from AND day <= :to") fun appDays(from: String, to: String): List<AppDayRow>
+    @Upsert fun upsertDaySaved(d: DaySavedRow)
+    @Query("SELECT * FROM DaySavedRow WHERE day >= :from AND day <= :to") fun daysSaved(from: String, to: String): List<DaySavedRow>
+    @Query("SELECT MIN(day) FROM DaySavedRow") fun firstSavedDay(): String?
+
+    // daily essay
+    @Insert fun insertEssay(e: EssayRow): Long
+    @Query("SELECT * FROM EssayRow ORDER BY time DESC") fun essaysFlow(): Flow<List<EssayRow>>
+    @Query("SELECT * FROM EssayRow WHERE day = :day LIMIT 1") fun essayFor(day: String): EssayRow?
 }
 
 @Database(
     entities = [SessionRow::class, MeterRow::class, ScreenRow::class, DigestRow::class, ChannelRow::class,
-        NotifLogRow::class, CardRow::class, PlaceRow::class, ChangeRow::class, EventRow::class],
-    version = 1,
+        NotifLogRow::class, CardRow::class, PlaceRow::class, ChangeRow::class, EventRow::class,
+        AppDayRow::class, DaySavedRow::class, EssayRow::class],
+    version = 2,
+    autoMigrations = [androidx.room.AutoMigration(from = 1, to = 2)],
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): Dao_

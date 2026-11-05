@@ -37,7 +37,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Newly installed app: pick a label now. Stays gated until labelled; non-gated label = loosening (24 h). */
+/** Newly installed app: pick a label now. Stays gated until labelled; non-gated label = loosening (pending, apply after 1 h). */
 class LabelActivity : BlackActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,9 +52,9 @@ class LabelActivity : BlackActivity() {
                 T("Pick a label. Until then it counts as gated." + (suggested?.let { "\nSuggested: $it" } ?: ""), 15.sp, Dim)
                 Chips(Cats.all(), emptySet()) { cat ->
                     if (pkg in Cats.lockedSocial) { msg = "$name is always Social"; return@Chips }
-                    // First label from "unlabelled": gated -> instant, non-gated -> 24 h wait.
+                    // First label from "unlabelled": gated -> instant, non-gated -> pending change (apply after 1 h).
                     msg = if (Rules.change("label.$pkg", cat, "Label $name as $cat")) "Labelled $cat"
-                    else "Non-gated label = loosening: $name stays gated for 24 h"
+                    else "Non-gated label = loosening: $name stays gated until you apply it (Settings, after 1 h)"
                     if (Store.get("label.$pkg") == null) Store.set("label.pending.$pkg", cat)
                 }
                 if (msg.isNotEmpty()) { T(msg, 15.sp, White); Btn("Done") { goHome() } }
